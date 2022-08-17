@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Root Account Alerts
+Parameters:
+  SnsProtocol:
+    Type: String
+    Default: email
+    AllowedValues:
+      - email
+      - https
+    Description: Enter email or https. Default is email.
+  snsEndpoint:
+    Type: String
+    Description: Enter SNS endpoint for notification delivery
+
+Resources:
+
+  RootAlertsTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: root-alerts
+      Tags: 
+        - Key: Project
+          Value: root-alerts-topic
+        - Key: ManagedBy
+          Value: "Terraform - Organizational StackSets"
+
+  RootAlertsSub:
+    Type: 'AWS::SNS::Subscription'
+    Properties:
+      Endpoint: !Ref snsEndpoint
+      Protocol: !Ref SnsProtocol
+      TopicArn: !Ref RootAlertsTopic
+
+  RootLoginEventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: capture-root-login
+      Description: Capture Sign-In of Root User
+      EventPattern:
+        detail-type:
+          - AWS Console Sign In via CloudTrail
+        source:
+          - aws.signin
+        detail:
+          userIdentity:
+            arn:
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+      State: ENABLED
+      Targets:
+        - Arn: !Ref RootAlertsTopic
+          Id: RootAlertsTopic
+          InputTransformer:
+            InputPathsMap:
+              account_id: $.account
+              event_id: $.detail.eventID
+              event_name: $.detail.eventName
+              event_time: $.detail.eventTime
+              source_ip: $.detail.sourceIPAddress
+              user_arn: $.detail.userIdentity.arn
+            InputTemplate: |
+              {
+                "Event ID": "<event_id>",
+                "Event Name": "<event_name>",
+                "Event Time": "<event_time>",
+                "Account ID": "<account_id>",
+                "User": "<user_arn>",
+                "Source IP": "<source_ip>",
+                "Message": "[Warn] Console Login detected for Root User"
+              }
+
+  RootKeysEventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: capture-root-keys-creation
+      Description: Capture AK/SK Creation for Root User
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        source:
+          - aws.iam
+        detail:
+          eventSource:
+            - iam.amazonaws.com
+          eventName:
+            - CreateAccessKey
+          userIdentity:
+            arn:
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+          requestParameters:
+            userName:
+              - exists: false
+      State: ENABLED
+      Targets:
+        - Arn: !Ref RootAlertsTopic
+          Id: RootAlertsTopic
+          InputTransformer:
+            InputPathsMap:
+              account_id: $.account
+              event_id: $.detail.eventID
+              event_name: $.detail.eventName
+              event_time: $.detail.eventTime
+              user_arn: $.detail.userIdentity.arn
+              user_name: $.detail.userIdentity.userName
+            InputTemplate: |
+              {
+                "Event ID": "<event_id>",
+                "Event Name": "<event_name>",
+                "Event Time": "<event_time>",
+                "Account ID": "<account_id>",
+                "User": "<user_name> (<user_arn>)",
+                "Message": "[Warn] AWS App Keys created for Root User"
+              }
+
+  EventBridgeToToSnsPolicy:
+    Type: 'AWS::SNS::TopicPolicy'
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: 'sns:Publish'
+            Resource: !Ref RootAlertsTopic
+      Topics:
+        - !Ref RootAlertsTopic
